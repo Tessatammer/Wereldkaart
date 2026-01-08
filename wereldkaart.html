@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactieve Wereldkaart - Talen & Vlaggen</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #f0f4f8;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            height: 100vh; /* Zorgt dat de kaart de volledige hoogte van het iframe pakt */
+        }
+
+        #map-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: radial-gradient(circle, #ffffff 0%, #eef2f6 100%);
+            padding: 10px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        #svg-wrapper {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        svg {
+            max-width: 100%;
+            max-height: 90vh;
+            filter: drop-shadow(0 10px 15px rgba(0,0,0,0.1));
+        }
+
+        path {
+            /* Jouw gekozen basiskleur */
+            fill: #98DAF6;
+            stroke: #ffffff;
+            stroke-width: 0.5;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+
+        path:hover {
+            /* Jouw gekozen hover kleur */
+            fill: #00A4E9;
+            stroke: #ffffff;
+            stroke-width: 1;
+            filter: brightness(1.05);
+        }
+
+        #tooltip {
+            position: fixed;
+            pointer-events: none;
+            background: rgba(255, 255, 255, 0.98);
+            border-radius: 12px;
+            padding: 15px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+            display: none;
+            z-index: 1000;
+            min-width: 200px;
+            border: 1px solid #e2e8f0;
+            backdrop-filter: blur(8px);
+        }
+
+        .flag-img {
+            width: 60px;
+            height: auto;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            border: 1px solid #ddd;
+            display: block;
+        }
+
+        .legend {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            font-size: 0.875rem;
+            color: #1e293b;
+            pointer-events: none;
+            border: 1px solid #e2e8f0;
+            z-index: 500;
+        }
+
+        .loading-overlay {
+            position: absolute;
+            inset: 0;
+            background: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            transition: opacity 0.5s ease;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #00A4E9;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+
+<body>
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="spinner mb-4"></div>
+        <p id="loading-text" class="text-slate-500 font-medium">Kaart en data voorbereiden...</p>
+    </div>
+
+    <div id="map-container">
+        <div id="svg-wrapper">
+            <svg viewBox="0 0 2000 1001" xmlns="http://www.w3.org/2000/svg">
+                <g id="world-paths"></g>
+            </svg>
+        </div>
+    </div>
+
+    <div id="tooltip">
+        <img id="tooltip-flag" class="flag-img" src="" alt="Vlag">
+        <h3 id="tooltip-country" class="text-lg font-bold text-slate-800"></h3>
+        <div class="mt-2">
+            <p class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Gesproken Talen:</p>
+            <ul id="tooltip-languages" class="text-sm text-slate-700 list-disc list-inside"></ul>
+        </div>
+    </div>
+
+    <div class="legend">
+        Beweeg over een land voor details
+    </div>
+
+    <script>
+        const manualNameOverrides = {
+            "PS": "Palestina",
+            "US": "Verenigde Staten",
+            "USA": "Verenigde Staten"
+        };
+
+        const manualLanguageOverrides = {
+            "ER": ["Tigrinya", "Tigre", "Arabisch"],
+            "ET": ["Amhaars", "Oromo", "Tigray", "Tigrinya"],
+            "US": ["Engels"],
+            "NL": ["Nederlands", "Fries"],
+            "BE": ["Nederlands", "Frans", "Duits"],
+            "CH": ["Duits", "Frans", "Italiaans", "Reto-Romaans"],
+            "CA": ["Engels", "Frans"],
+        };
+
+        const tooltip = document.getElementById('tooltip');
+        const countryNameElem = document.getElementById('tooltip-country');
+        const flagElem = document.getElementById('tooltip-flag');
+        const langListElem = document.getElementById('tooltip-languages');
+        const worldGroup = document.getElementById('world-paths');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const loadingText = document.getElementById('loading-text');
+
+        let countryData = {};
+
+        async function fetchCountryData() {
+            const fetchWithRetry = async (url, retries = 3) => {
+                for (let i = 0; i < retries; i++) {
+                    try {
+                        const response = await fetch(url);
+                        if (response.ok) return await response.json();
+                    } catch (e) {
+                        if (i === retries - 1) throw e;
+                    }
+                    await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+                }
+            };
+
+            try {
+                const data = await fetchWithRetry('https://restcountries.com/v3.1/all?fields=name,languages,flags,cca2,cca3');
+                data.forEach(c => {
+                    const code2 = c.cca2 ? c.cca2.toUpperCase() : null;
+                    const code3 = c.cca3 ? c.cca3.toUpperCase() : null;
+
+                    if (code2) {
+                        let languages = (c.languages && Object.keys(c.languages).length > 0)
+                            ? Object.values(c.languages)
+                            : ["Informatie niet beschikbaar"];
+
+                        if (manualLanguageOverrides[code2]) {
+                            languages = manualLanguageOverrides[code2];
+                        }
+
+                        let name = c.name.common;
+                        if (manualNameOverrides[code2]) name = manualNameOverrides[code2];
+                        if (code3 && manualNameOverrides[code3]) name = manualNameOverrides[code3];
+
+                        const entry = {
+                            name: name,
+                            languages: languages,
+                            flag: c.flags.svg || c.flags.png
+                        };
+
+                        countryData[code2] = entry;
+                        if (code3) {
+                            countryData[code3] = entry;
+                        }
+                    }
+                });
+            } catch (e) {
+                console.error("Fout bij laden landen-data:", e);
+            }
+        }
+
+        async function loadMap() {
+            const mapSources = [
+                'https://cdn.jsdelivr.net/npm/world.geo.json@1.0.3/countries.geo.json',
+                'https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json'
+            ];
+
+            let geoData = null;
+
+            for (const source of mapSources) {
+                try {
+                    const response = await fetch(source);
+                    if (!response.ok) continue;
+                    const text = await response.text();
+                    if (text.trim().startsWith('{') || text.trim().startsWith('[')) {
+                        geoData = JSON.parse(text);
+                        break;
+                    }
+                } catch (e) {
+                    console.warn(`Bron ${source} faalde.`);
+                }
+            }
+
+            if (!geoData) throw new Error("Kaart data niet gevonden");
+
+            const project = (lon, lat) => {
+                const x = (lon + 180) * (2000 / 360);
+                const y = (90 - lat) * (1001 / 180);
+                return `${x.toFixed(2)},${y.toFixed(2)}`;
+            };
+
+            geoData.features.forEach(feature => {
+                const id = feature.id || feature.properties.iso_a2 || feature.properties.iso_a3 || feature.properties.name;
+                const name = feature.properties.name;
+                let d = "";
+
+                const processCoords = (coords, type) => {
+                    if (type === "Polygon") {
+                        coords.forEach(ring => {
+                            d += "M" + ring.map(p => project(p[0], p[1])).join("L") + "Z";
+                        });
+                    } else if (type === "MultiPolygon") {
+                        coords.forEach(poly => {
+                            poly.forEach(ring => {
+                                d += "M" + ring.map(p => project(p[0], p[1])).join("L") + "Z";
+                            });
+                        });
+                    }
+                };
+
+                processCoords(feature.geometry.coordinates, feature.geometry.type);
+
+                const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                path.setAttribute("d", d);
+                path.setAttribute("id", id);
+
+                setupPathEvents(path, id, name);
+                worldGroup.appendChild(path);
+            });
+
+            loadingOverlay.style.opacity = '0';
+            setTimeout(() => loadingOverlay.style.display = 'none', 500);
+        }
+
+        function setupPathEvents(path, id, geoName) {
+            const getCountryInfo = () => {
+                let lookupId = id.toString().toUpperCase();
+                if (lookupId === "WEST BANK" || geoName === "West Bank") lookupId = "PS";
+
+                let info = countryData[lookupId];
+                if (!info) {
+                    info = Object.values(countryData).find(c =>
+                        c.name.toLowerCase() === geoName.toLowerCase()
+                    );
+                }
+                return info || { name: geoName, flag: null, languages: ["Onbekend"] };
+            };
+
+            path.addEventListener('mouseenter', (e) => {
+                const info = getCountryInfo();
+
+                countryNameElem.innerText = info.name;
+                if(info.flag) {
+                    flagElem.src = info.flag;
+                    flagElem.style.display = 'block';
+                } else {
+                    flagElem.style.display = 'none';
+                }
+                langListElem.innerHTML = info.languages.map(l => `<li>${l}</li>`).join('');
+                tooltip.style.display = 'block';
+            });
+
+            path.addEventListener('mousemove', (e) => {
+                const x = e.clientX + 15;
+                const y = e.clientY + 15;
+                const rect = tooltip.getBoundingClientRect();
+
+                let finalX = x;
+                let finalY = y;
+
+                if (x + rect.width > window.innerWidth) finalX = e.clientX - rect.width - 15;
+                if (y + rect.height > window.innerHeight) finalY = e.clientY - rect.height - 15;
+
+                tooltip.style.left = finalX + 'px';
+                tooltip.style.top = finalY + 'px';
+            });
+
+            path.addEventListener('mouseleave', () => {
+                tooltip.style.display = 'none';
+            });
+        }
+
+        window.onload = async () => {
+            try {
+                await fetchCountryData();
+                await loadMap();
+            } catch (e) {
+                loadingText.innerHTML = "<span class='text-red-500'>Fout bij laden. Controleer verbinding.</span>";
+            }
+        };
+    </script>
+</body>
+</html>
